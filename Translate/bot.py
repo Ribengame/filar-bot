@@ -1,5 +1,5 @@
 import discord
-from discord import app_commands
+from discord.ext import commands
 import asyncio
 import random
 import os
@@ -7,7 +7,7 @@ import json
 from datetime import datetime, timedelta
 
 # --- Load Config ---
-with open("config.json", "r") as f:
+with open("config.json", "r", encoding="utf-8") as f:
     config = json.load(f)
 
 TOKEN = config.get("token")
@@ -19,7 +19,7 @@ TARGET_CHANNEL_ID = config.get("target_channel_id")
 ALLOWED_LINK_CHANNELS = set(config.get("allowed_link_channels", []))
 EMOJI_TO_ROLE = config.get("emoji_to_role", {})
 
-# --- Intents and Client Setup ---
+# --- Intents ---
 intents = discord.Intents.default()
 intents.message_content = True
 intents.guilds = True
@@ -28,12 +28,7 @@ intents.messages = True
 intents.bans = True
 intents.presences = True  # To check member activity status
 
-class MyClient(discord.Client):
-    def __init__(self):
-        super().__init__(intents=intents)
-        self.tree = app_commands.CommandTree(self)
-
-client = MyClient()
+bot = commands.Bot(command_prefix="!", intents=intents)
 
 # --- Globals for stats ---
 stats = {
@@ -42,7 +37,7 @@ stats = {
     "users_joined": 0,
     "users_left": 0,
     "banned_users": 0,
-    "inactive_users": 0,  # calculated dynamically
+    "inactive_users": 0,
 }
 
 verified_members = set()
@@ -52,23 +47,22 @@ open_tickets = {}
 ticket_message_id = None
 role_message_id = None
 
-# --- Helper Functions to Save/Load IDs ---
+# --- Helper Functions ---
 def save_message_id(filename, message_id):
-    with open(filename, "w") as f:
+    with open(filename, "w", encoding="utf-8") as f:
         json.dump({"message_id": message_id}, f)
 
 def load_message_id(filename):
     if not os.path.exists(filename):
         return None
     try:
-        with open(filename, "r") as f:
+        with open(filename, "r", encoding="utf-8") as f:
             data = json.load(f)
             return data.get("message_id")
     except json.JSONDecodeError:
         return None
 
 # --- Ticket System ---
-
 class TicketButton(discord.ui.View):
     def __init__(self):
         super().__init__(timeout=None)
@@ -103,12 +97,12 @@ class TicketButton(discord.ui.View):
         )
         await ticket_channel.send(
             f"Cześć {interaction.user.mention}! Niedługo powinna pojawić się moderacja.\n"
-            "Żeby zamknąć zgłoszenie, użyj komendy /close."
+            "Żeby zamknąć zgłoszenie, użyj komendy !close."
         )
 
 async def setup_ticket_message():
     global ticket_message_id
-    channel = client.get_channel(TICKET_CHANNEL_ID)
+    channel = bot.get_channel(TICKET_CHANNEL_ID)
     if not channel:
         print("❌ Ticket channel not found!")
         return
@@ -125,7 +119,7 @@ async def setup_ticket_message():
             ticket_message_id = None
 
     async for msg in channel.history(limit=50):
-        if msg.author == client.user and "Kliknij przycisk, aby utworzyć zgłoszenie." in msg.content:
+        if msg.author == bot.user and "Kliknij przycisk, aby utworzyć zgłoszenie." in msg.content:
             ticket_message_id = msg.id
             save_message_id("ticket_message.json", ticket_message_id)
             print(f"✅ Found existing ticket message in channel history: {ticket_message_id}")
@@ -138,10 +132,9 @@ async def setup_ticket_message():
     print(f"✅ New ticket message sent: {ticket_message_id}")
 
 # --- Self-Assign Roles ---
-
 async def setup_role_message():
     global role_message_id
-    channel = client.get_channel(ROLE_CHANNEL_ID)
+    channel = bot.get_channel(ROLE_CHANNEL_ID)
     if not channel:
         print("❌ Role channel not found!")
         return
@@ -174,14 +167,14 @@ async def setup_role_message():
     save_message_id("role_message.json", role_message_id)
     print(f"✅ New role message sent: {role_message_id}")
 
-@client.event
+@bot.event
 async def on_raw_reaction_add(payload):
     if payload.message_id != role_message_id:
         return
-    if payload.user_id == client.user.id:
+    if payload.user_id == bot.user.id:
         return
 
-    guild = client.get_guild(payload.guild_id)
+    guild = bot.get_guild(payload.guild_id)
     if not guild:
         return
     member = guild.get_member(payload.user_id)
@@ -201,14 +194,14 @@ async def on_raw_reaction_add(payload):
         except Exception as e:
             print(f"Failed to add role: {e}")
 
-@client.event
+@bot.event
 async def on_raw_reaction_remove(payload):
     if payload.message_id != role_message_id:
         return
-    if payload.user_id == client.user.id:
+    if payload.user_id == bot.user.id:
         return
 
-    guild = client.get_guild(payload.guild_id)
+    guild = bot.get_guild(payload.guild_id)
     if not guild:
         return
     member = guild.get_member(payload.user_id)
@@ -229,7 +222,6 @@ async def on_raw_reaction_remove(payload):
             print(f"Failed to remove role: {e}")
 
 # --- Anti-Raid Math Challenge ---
-
 def generate_math_question():
     a = random.randint(1, 20)
     b = random.randint(1, 20)
@@ -238,7 +230,7 @@ def generate_math_question():
     answer = a + b if op == '+' else a - b
     return question, answer
 
-@client.event
+@bot.event
 async def on_member_join(member):
     stats["users_joined"] += 1
     try:
@@ -253,7 +245,7 @@ async def on_member_join(member):
             return m.author == member and m.channel == dm_channel
 
         try:
-            msg = await client.wait_for('message', check=check, timeout=120)
+            msg = await bot.wait_for('message', check=check, timeout=120)
         except asyncio.TimeoutError:
             await dm_channel.send("Nie odpowiedziałeś na czas. Spróbuj dołączyć ponownie i rozwiązać zadanie.")
             stats["failed_verification"] += 1
@@ -283,7 +275,7 @@ async def on_member_join(member):
     except Exception as e:
         print(f"Error verifying member {member}: {e}")
 
-@client.event
+@bot.event
 async def on_member_remove(member):
     stats["users_left"] += 1
     verified_members.discard(member.id)
@@ -291,83 +283,85 @@ async def on_member_remove(member):
     last_message_times.pop(member.id, None)
     open_tickets.pop(member.id, None)
 
-@client.event
+@bot.event
 async def on_member_ban(guild, user):
     stats["banned_users"] += 1
 
-@client.event
+@bot.event
 async def on_member_unban(guild, user):
     if stats["banned_users"] > 0:
         stats["banned_users"] -= 1
 
-@client.event
+@bot.event
 async def on_message(message):
     if message.author.bot:
         return
 
     last_message_times[message.author.id] = datetime.utcnow()
 
+    # Check if message is in target channel or its category
     is_target = False
     if message.channel.id == TARGET_CHANNEL_ID:
         is_target = True
-    elif hasattr(message.channel, "category") and message.channel.category and message.channel.category.id == TARGET_CHANNEL_ID:
+    elif getattr(message.channel, "category", None) and message.channel.category.id == TARGET_CHANNEL_ID:
         is_target = True
 
-    # Check for discord.gg links
-    if any(x in message.content.lower() for x in ("discord.gg/", "discord.com/invite/")):
-        if message.channel.id not in ALLOWED_LINK_CHANNELS:
-            try:
-                await message.delete()
-                await message.channel.send(f"{message.author.mention}, linki zaproszeń nie są dozwolone tutaj.", delete_after=10)
-            except Exception as e:
-                print(f"Failed to delete invite link: {e}")
-            return
+    # Check for discord.gg or discord.com/invite links
+    lowered = message.content.lower()
+    if ("discord.gg/" in lowered or "discord.com/invite/" in lowered) and message.channel.id not in ALLOWED_LINK_CHANNELS:
+        try:
+            await message.delete()
+            await message.channel.send(
+                f"{message.author.mention}, linki zaproszeń nie są dozwolone tutaj.",
+                delete_after=10
+            )
+        except Exception as e:
+            print(f"Failed to delete invite link: {e}")
+        return
 
-    # No prefix commands, so no processing commands here
+    await bot.process_commands(message)
 
-# --- Slash Commands ---
-
-@client.tree.command(name="close", description="Zamknij swoje zgłoszenie.")
-async def close(interaction: discord.Interaction):
-    user_id = interaction.user.id
+# --- Commands ---
+@bot.command(name="close")
+async def close_ticket(ctx):
+    user_id = ctx.author.id
     if user_id not in open_tickets:
-        await interaction.response.send_message("Nie masz otwartego zgłoszenia.", ephemeral=True)
+        await ctx.send("Nie masz otwartego zgłoszenia.", delete_after=10)
         return
 
     ticket_channel_id = open_tickets[user_id]
-    ticket_channel = client.get_channel(ticket_channel_id)
+    ticket_channel = bot.get_channel(ticket_channel_id)
     if ticket_channel:
         try:
-            await ticket_channel.delete(reason=f"Zgłoszenie zamknięte przez {interaction.user}")
+            await ticket_channel.delete(reason=f"Zgłoszenie zamknięte przez {ctx.author}")
             del open_tickets[user_id]
-            await interaction.response.send_message("Twoje zgłoszenie zostało zamknięte.", ephemeral=True)
+            await ctx.send("Twoje zgłoszenie zostało zamknięte.", delete_after=10)
         except Exception as e:
-            await interaction.response.send_message(f"Nie udało się zamknąć zgłoszenia: {e}", ephemeral=True)
+            await ctx.send(f"Nie udało się zamknąć zgłoszenia: {e}", delete_after=10)
     else:
         del open_tickets[user_id]
-        await interaction.response.send_message("Nie znaleziono kanału zgłoszenia, ale twoje zgłoszenie zostało usunięte z listy.", ephemeral=True)
+        await ctx.send(
+            "Nie znaleziono kanału zgłoszenia, ale twoje zgłoszenie zostało usunięte z listy.",
+            delete_after=10
+        )
 
-@client.tree.command(name="reactions", description="Pokaż liczbę reakcji na wiadomości w kanałach.")
-async def reactions(interaction: discord.Interaction):
-    channel = interaction.channel
-    if not channel.permissions_for(interaction.user).manage_messages:
-        await interaction.response.send_message("Nie masz uprawnień do zarządzania wiadomościami.", ephemeral=True)
-        return
-
+@bot.command(name="reactions")
+@commands.has_permissions(manage_messages=True)
+async def reactions(ctx):
+    channel = ctx.channel
     counter = 0
     async for msg in channel.history(limit=100):
         counter += sum(reaction.count for reaction in msg.reactions)
 
-    await interaction.response.send_message(f"W tym kanale jest {counter} reakcji na ostatnich 100 wiadomościach.")
+    await ctx.send(f"W tym kanale jest {counter} reakcji na ostatnich 100 wiadomościach.")
 
-@client.tree.command(name="stats", description="Pokaż statystyki serwera.")
-async def stats_cmd(interaction: discord.Interaction):
-    guild = interaction.guild
+@bot.command(name="stats")
+async def stats_cmd(ctx):
+    guild = ctx.guild
     if not guild:
-        await interaction.response.send_message("Ta komenda działa tylko na serwerze.", ephemeral=True)
+        await ctx.send("Ta komenda działa tylko na serwerze.")
         return
 
-    # Calculate inactive users (no message for 30 days)
     threshold = datetime.utcnow() - timedelta(days=30)
     inactive_count = 0
     for member in guild.members:
@@ -379,31 +373,27 @@ async def stats_cmd(interaction: discord.Interaction):
     stats["inactive_users"] = inactive_count
 
     embed = discord.Embed(title="Statystyki serwera", color=discord.Color.blue())
-    embed.add_field(name="Przeszło weryfikację", value=stats["passed_verification"])
-    embed.add_field(name="Nie przeszło weryfikacji", value=stats["failed_verification"])
-    embed.add_field(name="Dołączyło użytkowników", value=stats["users_joined"])
-    embed.add_field(name="Opuściło użytkowników", value=stats["users_left"])
-    embed.add_field(name="Zbanowanych użytkowników", value=stats["banned_users"])
-    embed.add_field(name="Nieaktywnych użytkowników (30 dni)", value=stats["inactive_users"])
+    embed.add_field(name="Przeszło weryfikację", value=stats["passed_verification"], inline=True)
+    embed.add_field(name="Nie przeszło weryfikacji", value=stats["failed_verification"], inline=True)
+    embed.add_field(name="Dołączyło użytkowników", value=stats["users_joined"], inline=True)
+    embed.add_field(name="Opuściło użytkowników", value=stats["users_left"], inline=True)
+    embed.add_field(name="Zbanowanych użytkowników", value=stats["banned_users"], inline=True)
+    embed.add_field(name="Nieaktywnych użytkowników (30 dni)", value=stats["inactive_users"], inline=True)
 
-    await interaction.response.send_message(embed=embed)
+    await ctx.send(embed=embed)
 
-@client.tree.command(name="ping", description="Sprawdź ping bota.")
-async def ping(interaction: discord.Interaction):
-    latency_ms = round(client.latency * 1000)
-    await interaction.response.send_message(f"Pong! Opóźnienie: {latency_ms} ms")
+@bot.command(name="ping")
+async def ping(ctx):
+    latency_ms = round(bot.latency * 1000)
+    await ctx.send(f"Pong! Opóźnienie: {latency_ms} ms")
 
 # --- On Ready ---
-
-@client.event
+@bot.event
 async def on_ready():
-    print(f"Bot zalogowany jako {client.user} (ID: {client.user.id})")
-    await client.tree.sync(guild=discord.Object(id=GUILD_ID))
-    print("Slash commands zsynchronizowane.")
-
-    # Setup persistent messages
+    print(f"Bot zalogowany jako {bot.user} (ID: {bot.user.id})")
     await setup_ticket_message()
     await setup_role_message()
+    print("Setup finished.")
 
 # --- Run Bot ---
-client.run(TOKEN)
+bot.run(TOKEN)
